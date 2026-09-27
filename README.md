@@ -1,5 +1,5 @@
 # ELRS Buddy
-Configure ExpressLRS modules from a browser. The Node.js server owns the serial port attached to its machine and provides it to the browser app over a local WebSocket connection. The app simulates an EdgeTX Lua environment, speaks Crossfire, and executes elrsV3.lua in the browser.
+Configure ExpressLRS modules from a browser. The Node.js server owns the serial port attached to its machine and provides it to the browser app over a local WebSocket connection. The app simulates an EdgeTX Lua environment, speaks Crossfire, and executes elrs.lua in the browser.
 
 ## Free instance
 Enjoy a free instance of this app at https://fourflies.mooo.com/elrsbuddy/

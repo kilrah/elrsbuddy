@@ -4,7 +4,7 @@
 <title>ELRS Buddy</title>
 <link rel="icon" type="image/png" href="favicon.png">
 <script src="wasmoon-web.js" type="text/javascript" async></script>
-<script src="elrsV3.lua" type="application/lua" async></script>
+<script src="elrs.lua" type="application/lua" async></script>
 <style>
 button {
 	width: 100%;
@@ -19,7 +19,7 @@ a {
 <body style="font-family:Roboto,-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;">
 <div style="display:flex; flex-direction:column; position:absolute; top:0; bottom:0; left:0; right:0; background-color:#5f8bf3;">
 	<div style="display:flex;">
-		<div style="width:640px;">
+		<div style="width:700px;">
 			<div style="display:flex;">
 				<select id="serialport" disabled="disabled"></select>
 				<button id="refreshports">refresh ports</button>
@@ -47,13 +47,13 @@ a {
 				<div style="margin:auto;"><div>ELRS Buddy</div><div style="font-size:0.5em; font-weight:normal; text-align:right;">v1.0.4</div></div>
 			</div>
 			<div id="lua-info" style="color: white; text-align: center; margin-top: 1em;">
-				<div style="font-size: 0.9em; opacity: 0.8;">Current: <span id="lua-filename">elrsV3.lua</span></div>
+				<div style="font-size: 0.9em; opacity: 0.8;">Current: <span id="lua-filename">elrs.lua</span></div>
 				<div id="lua-version" style="font-weight: bold; margin-top: 0.2em;">-- (no connection)</div>
 			</div>
 			<div style="text-align: center; margin-top: 1em; display: flex; flex-direction: column; gap: 0.5em; align-items: center;">
 				<button id="upload-btn" style="width: auto; padding: 0.5em 1em; cursor: pointer; border-radius: 4px; border: 1px solid white; background: rgba(255,255,255,0.1); color: white;">Upload Lua</button>
 				<input type="file" id="lua-upload" style="display: none;" accept=".lua">
-				<a id="download-link" href="elrsV3.lua" download="elrsV3.lua" style="font-size: 0.8em; color: white; opacity: 0.7; text-decoration: underline;">Download Current Lua</a>
+				<a id="download-link" href="elrs.lua" download="elrs.lua" style="font-size: 0.8em; color: white; opacity: 0.7; text-decoration: underline;">Download Current Lua</a>
 			</div>
 			<div style="text-align: center; margin-top: 2em;">
 				<a target="_blank" href="https://youtube.com/playlist?list=PL5blJzbVpLjFwGb_-_IBfnscjPwTEA98u">Introduction / Howto</a>
@@ -175,7 +175,7 @@ a {
 	end
 	
 	function loadelrs (filename)
-		ELRS_LOAD = loadfile(filename or 'elrsV3.lua')
+		ELRS_LOAD = loadfile(filename or 'elrs.lua')
 		return ELRS_LOAD
 	end
 	
@@ -361,7 +361,7 @@ function loadports (verbose=true) {
 		serialselect.replaceChildren();
 		const placeholder = document.createElement('option');
 		placeholder.value = '';
-		placeholder.textContent = ports.length ? 'select server port' : 'no server ports found';
+		placeholder.textContent = ports.length ? 'select port' : 'no ports found';
 		placeholder.disabled = ports.length > 0;
 		serialselect.append(placeholder);
 		for (const port of ports) {
@@ -790,7 +790,7 @@ document.addEventListener('keydown', (ev) => {
 	elrsrun(key);
 	return false;
 });
-document.querySelector('script[src="elrsV3.lua"]').addEventListener(
+document.querySelector('script[src="elrs.lua"]').addEventListener(
 	'load',
 	(ev) => {
 		if (elrs_load === true) {
