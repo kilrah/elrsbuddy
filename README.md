@@ -1,5 +1,5 @@
 # ELRS Buddy
-Configure ExpressLRS modules from a web browser. This webapp simulates an EdgeTX Lua environment, speaks Crossfire via a serial port, and executes elrsV3.lua all in a browser.
+Configure ExpressLRS modules from a browser. The Node.js server owns the serial port attached to its machine and provides it to the browser app over a local WebSocket connection. The app simulates an EdgeTX Lua environment, speaks Crossfire, and executes elrsV3.lua in the browser.
 
 ## Free instance
 Enjoy a free instance of this app at https://fourflies.mooo.com/elrsbuddy/
@@ -16,11 +16,11 @@ docker run -v ~/elrsbuddy:/eb -w /eb --name eb -ti --rm -p 8080:8080 node /bin/b
 npm install
 ```
 
-### Start a development instance
+### Start the app
 ```bash
 npm start
 ```
-Now you can connect to http://localhost:8080 to use elrsbuddy. Any changes will be automatically built and available.
+This builds the app and starts the local server at http://localhost:8080. Connect the ExpressLRS device to the machine running the server, then select its serial port in the app. The server listens on 127.0.0.1 by default. For Docker or a browser on another machine, run `HOST=0.0.0.0 npm start`; only do this on a trusted network because the serial endpoint has no authentication.
 
 ### Build deployable artifacts
 ```bash

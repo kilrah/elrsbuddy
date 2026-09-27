@@ -21,7 +21,8 @@ a {
 	<div style="display:flex;">
 		<div style="width:640px;">
 			<div style="display:flex;">
-				<button id="pair">pair device</button>
+				<select id="serialport" disabled="disabled"></select>
+				<button id="refreshports">refresh ports</button>
 				<select id="baud" size="1" disabled="disabled">
 					<option value="921600" selected="selected">921600 bps</option>
 					<option value="460800">460800 bps</option>
@@ -329,49 +330,36 @@ function llog (msg) {
 	console.log(msg);
 }
 
-function portstr (info) {
-	let str = '';
-	if (info.usbVendorId) {
-		str += info.usbVendorId;
-	} else {
-		str += '0';
-	}
-	str += ':';
-	if (info.usbProductId) {
-		str += info.usbProductId;
-	} else {
-		str += '0';
-	}
-	return str;
-}
-
-function loadpairedports (verbose=true) {
-	navigator.serial.getPorts().then((ports) => {
-		let info;
-		let npairedport = null;
-		for (port of ports) {
-			info = port.getInfo();
-			if (pairedport != null && pairedport.port == port) return;
-			const str = portstr(info);
-			npairedport = {
-				port: port,
-				info: str
-			};
-			if (verbose) llog(`device ${str} found`);
-			break;
+function loadports (verbose=true) {
+	const selectedPath = serialselect.value;
+	fetch('/api/ports').then((response) => {
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		return response.json();
+	}).then((ports) => {
+		serialselect.replaceChildren();
+		const placeholder = document.createElement('option');
+		placeholder.value = '';
+		placeholder.textContent = ports.length ? 'select server port' : 'no server ports found';
+		placeholder.disabled = ports.length > 0;
+		serialselect.append(placeholder);
+		for (const port of ports) {
+			const option = document.createElement('option');
+			option.value = port.path;
+			option.textContent = `${port.path}${port.manufacturer ? ` (${port.manufacturer})` : ''}`;
+			serialselect.append(option);
 		}
-		pairedport = npairedport;
-		if (pairedport != null) {
-			pairbutton.innerHTML = 'unpair ' + pairedport.info;
-			baudselect.disabled = false;
-			connbutton.disabled = false;
-			connbutton.innerHTML = 'connect';
-		} else {
-			pairbutton.innerHTML = 'pair device';
-			baudselect.disabled = true;
-			connbutton.disabled = true;
-			connbutton.innerHTML = 'connect';
-		}
+		serialselect.value = ports.some((port) => port.path === selectedPath) ? selectedPath : '';
+		serialselect.disabled = ports.length === 0 || serialConnected;
+		baudselect.disabled = ports.length === 0 || serialConnected;
+		connbutton.disabled = (!serialConnected && !serialselect.value) || serialConnecting;
+		refreshportsbutton.disabled = serialConnected || serialConnecting;
+		if (verbose) llog(`${ports.length} server serial port(s) found`);
+	}).catch((error) => {
+		serialselect.replaceChildren();
+		serialselect.disabled = true;
+		baudselect.disabled = true;
+		connbutton.disabled = true;
+		llog(`unable to list server serial ports: ${error.message}`);
 	});
 }
 
@@ -431,14 +419,14 @@ async function boot () {
 	crossfirePop = lua.global.get('crossfireTelemetryPop');
 	crossfireFlush = lua.global.get('crossfireTelemetryFlush');
 	multiret = lua.global.get('multiret');
-	const logelem = document.getElementById("log");
+	const logelem = false //document.getElementById("log");
 	if (logelem) {
 		llog = function (msg) {
 			const tm = get_uptime();
 			logelem.append(`${tm} ${msg}\n`);
 		}
 	}
-	loadpairedports();
+	loadports();
 	lcd.ctx = document.getElementById('lcd').getContext('2d');
 	lcd.clear();
 	lcd.INVERS = lua.global.get('INVERS');
@@ -474,13 +462,15 @@ elrs = null;
 crossfirePop = null;
 crossfireFlush = null;
 multiret = null;
-pairedport = null;
+serialConnected = false;
+serialConnecting = false;
 statusinterval = null;
 elrsinterval = null;
 comworker = new Worker('worker.js');
 baudselect = document.getElementById('baud');
 connbutton = document.getElementById('connect');
-pairbutton = document.getElementById('pair');
+serialselect = document.getElementById('serialport');
+refreshportsbutton = document.getElementById('refreshports');
 startbutton = document.getElementById('start');
 statusspan = document.getElementById('crsfstatus');
 popup_status = {
@@ -556,20 +546,27 @@ status.reset();
 
 const workermsg = {
 	'started': function (data) {
-		llog("serial worker started");
+		llog("server serial port connected");
+		serialConnecting = false;
+		serialConnected = true;
 		connbutton.innerHTML = 'disconnect';
+		connbutton.disabled = false;
+		serialselect.disabled = true;
 		baudselect.disabled = true;
+		refreshportsbutton.disabled = true;
 		status.start();
 	},
 	'stopped': function (data) {
-		llog("serial worker stopped");
+		llog("server serial port disconnected");
+		serialConnecting = false;
+		serialConnected = false;
 		connbutton.innerHTML = 'connect';
-		startbutton.disabled = true;
-		baudselect.disabled = false;
+		refreshportsbutton.disabled = false;
 		crossfireFlush();
 		status.reset();
 		elrsrefresh(true);
 		elrs = null;
+		loadports(false);
 	},
 	'writeburn': function (data) {
 		comworker.postMessage(data);
@@ -627,42 +624,21 @@ document.querySelector('script[src="elrsV3.lua"]').addEventListener(
 	}
 );
 
-navigator.serial.addEventListener("connect", (e) => {
-	const info = e.target.getInfo();
-	const str = portstr(info);
-	llog(`paired device ${str} attached`);
-	loadpairedports(false);
-});
-navigator.serial.addEventListener("disconnect", (e) => {
-	const info = e.target.getInfo();
-	const str = portstr(info);
-	llog(`paired device ${str} detached`);
-	loadpairedports(false);
+serialselect.addEventListener('change', () => {
+	connbutton.disabled = !serialselect.value || serialConnecting;
 });
 
-pairbutton.addEventListener("click", () => {
-	if (pairedport != null) {
-		pairedport.port.forget().then(() => {
-			llog(`device ${pairedport.info} unpaired`);
-			loadpairedports();
-		});
-	} else {
-		navigator.serial.requestPort().then((port) => {
-			const info = port.getInfo();
-			const str = portstr(info);
-			llog(`device ${str} paired`);
-			loadpairedports(false);
-		}).catch((e) => {
-			if (e.name == 'NotFoundError') return;
-			throw(e);
-		});
-	}
-});
+refreshportsbutton.addEventListener('click', () => loadports());
 
 connbutton.addEventListener("click", () => {
-	if (pairedport == null) return;
 	if (connbutton.innerHTML == 'connect') {
-		comworker.postMessage(["start", baudselect.value]);
+		if (!serialselect.value) return;
+		serialConnecting = true;
+		serialselect.disabled = true;
+		baudselect.disabled = true;
+		refreshportsbutton.disabled = true;
+		connbutton.disabled = true;
+		comworker.postMessage(["start", serialselect.value, baudselect.value]);
 		connbutton.innerHTML = 'connecting...';
 	} else {
 		comworker.postMessage(["stop"]);

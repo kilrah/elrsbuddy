@@ -6,10 +6,11 @@ const CRSF_FRAMETYPE_RADIO_ID = 0x3A;
 // CRSF durations are exchanged as 10*usec
 const TIME1MSEC = 10000;
 let CRC8TABLE = new Uint8Array(256);
-let port = null;
-let reader = null;
-let read = read_cancel;
-let writer = null;
+let socket = null;
+let sessionActive = false;
+let startPending = false;
+let receiveBuffer = new Uint8Array(1024);
+let receiveOffset = 0;
 let write = write_close;
 let wbuf = {
 	'b': new Uint8Array(256),
@@ -329,106 +330,71 @@ function buf_shift (buf, shift, offset) {
 	return offset-shift;
 }
 
-function port_close (timeout=false) {
-	if (!timeout) {
-		// for some fkd up reason, port.close() fails bizarrely without this
-		setTimeout(port_close, 10, true);
-		return;
-	}
-	port.close().then(() => {
-		self.postMessage(["stopped"]);
-	});
-}
-
-function read_stop () {
-	reader = null;
-	if (writer == null) {
-		port_close();
-	}
-}
-
-function read_cancel () {
-	if (reader == null) return;
-	reader.cancel().then(() => {
-		reader.releaseLock();
-		read_stop();
-	});
-}
-
-function read_run (rbuf = new ArrayBuffer(255), offset = 0) {
-	return reader.read(
-		new Uint8Array(rbuf, offset, rbuf.byteLength-offset)
-	).then(({value, done}) => {
-		if (done) {
-			return;
-		}
-		offset += value.length;
-		while (offset > 3) {
-			// check for any valid packets in potential noise
-			let tblen = offset;
-			let tboffset = 0;
-			let len = 0;
-			do {
-				const tbuf = new Uint8Array(value.buffer, tboffset, tblen);
-				len = tbuf[1] + 2; // length including sync and len bytes
-				if (len > 64 || len < 4) {
-					tboffset += 2;
-					tblen -= 2;
-					len = 0
-					continue;
-				}
-				if (len > tblen) {
-					len = 0;
-					break;
-				}
-				if (!validate_packet(tbuf.subarray(0, len))) {
-					tboffset += 2;
-					tblen -= 2;
-					len = 0;
-					continue;
-				}
-				// found a valid packet
-				break;
-			} while (tblen > 1);
-			if (tboffset > 0) {
-				log("noise: " + hexprintable(new Uint8Array(value.buffer, 0, tboffset)));
-				offset = buf_shift(value.buffer, tboffset, offset);
-			}
-			if (len == 0) {
-				// no packet leftover
-				break;
-			}
-			let packet = new Uint8Array(value.buffer, 0, len);
-			let type = packet[2];
-			let payload = new DataView(value.buffer, 3, len-4);
-			if (DECODE[type](payload, type) == DECODED_FORWARD) {
-				self.postMessage(["crsfrecv", type, [...packet.subarray(3, -1)]]);
-			}
-			offset = buf_shift(value.buffer, len, offset);
-		}
-		return read(value.buffer, offset);
-	});/*.catch((e) => {
-		console.log(`worker error: read ${e.name} ${e.message}`);
-		read = read_cancel;
-		read_stop();
-	});*/
-}
-
-function write_stop () {
-	writer = null;
-	if (reader == null) {
-		port_close();
-	}
-}
-
 function write_close () {
-	if (writer == null) return;
-	writer.ready.then(() => {
-		writer.close();
-	}).then(() => {
-		writer.releaseLock();
-		write_stop();
-	});
+	if (socket && socket.readyState === WebSocket.OPEN) {
+		socket.send(JSON.stringify(['disconnect']));
+	} else if (socket) {
+		socket.close();
+	} else {
+		notify_stopped();
+	}
+}
+
+function notify_stopped () {
+	if (!sessionActive && !startPending) return;
+	sessionActive = false;
+	startPending = false;
+	write = write_close;
+	receiveOffset = 0;
+	self.postMessage(["stopped"]);
+}
+
+function read_run (chunk) {
+	if (receiveOffset + chunk.length > receiveBuffer.length) {
+		log('serial receive buffer overflow');
+		receiveOffset = 0;
+	}
+	receiveBuffer.set(chunk, receiveOffset);
+	receiveOffset += chunk.length;
+	while (receiveOffset > 3) {
+		let packetOffset = -1;
+		let packetLength = 0;
+		let incompleteOffset = -1;
+		for (let offset = 0; offset + 4 <= receiveOffset; offset++) {
+			const length = receiveBuffer[offset + 1] + 2;
+			if (length > 64 || length < 4) continue;
+			if (offset + length > receiveOffset) {
+				incompleteOffset = offset;
+				break;
+			}
+			if (validate_packet(receiveBuffer.subarray(offset, offset + length))) {
+				packetOffset = offset;
+				packetLength = length;
+				break;
+			}
+		}
+		if (packetOffset < 0) {
+			const discard = incompleteOffset >= 0 ? incompleteOffset : receiveOffset - 3;
+			if (discard > 0) {
+				log("noise: " + hexprintable(receiveBuffer.subarray(0, discard)));
+				receiveBuffer.copyWithin(0, discard, receiveOffset);
+				receiveOffset -= discard;
+			}
+			break;
+		}
+		if (packetOffset > 0) {
+			log("noise: " + hexprintable(receiveBuffer.subarray(0, packetOffset)));
+		}
+		const packet = receiveBuffer.subarray(packetOffset, packetOffset + packetLength);
+		const type = packet[2];
+		const payload = new DataView(packet.buffer, packet.byteOffset + 3, packetLength - 4);
+		if (DECODE[type](payload, type) == DECODED_FORWARD) {
+			self.postMessage(["crsfrecv", type, [...packet.subarray(3, -1)]]);
+		}
+		const consumed = packetOffset + packetLength;
+		receiveBuffer.copyWithin(0, consumed, receiveOffset);
+		receiveOffset -= consumed;
+	}
 }
 
 function write_burn (lastwrite) {
@@ -444,65 +410,68 @@ function write_run () {
 		log(`writes_burn=${writes_burn} writes_st=${writes_st}`);
 		writes_burn = writes_st = 0;
 	}
-	writer.write(wbuf.b.subarray(0, wbuf.offset)).then(() => {
-		let lastwrite = performance.now();
-		const writedelay = (write_interval + write_shift) / TIME1MSEC;
-		// for debugging timing issues
-		// const t_write_shift = write_shift;
-		wbuf.offset = 26;
-		write_shift = 0;
-		if (writedelay >= 3.7) {
-			// for debugging timing issues
-			// console.log(`write_st ${lastwrite} ${t_write_shift} ${writedelay}`);
-			writes_st++;
-			setTimeout(write, Math.floor(writedelay), lastwrite);
-			return;
-		}
-		// Browsers impose a minimum delay of 4 ms to setTimeout() calls
-		// so the best workaround seems to be sending a message and
-		// then burning up some cycles for the rest of the timeout
-		writes_burn++;
-		self.postMessage(["writeburn", lastwrite]);
-	}).catch((e) => {
-		console.log(`worker error: write ${e.name} ${e.message}`);
-		write = write_close;
-		write_stop();
-	});
+	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	const bytes = wbuf.b.slice(0, wbuf.offset);
+	wbuf.offset = 26;
+	socket.send(bytes);
+	write_complete();
+}
+
+function write_complete () {
+	if (write !== write_run) return;
+	const lastwrite = performance.now();
+	const writedelay = (write_interval + write_shift) / TIME1MSEC;
+	wbuf.offset = 26;
+	write_shift = 0;
+	if (writedelay >= 3.7) {
+		writes_st++;
+		setTimeout(write, Math.floor(writedelay), lastwrite);
+		return;
+	}
+	writes_burn++;
+	self.postMessage(["writeburn", lastwrite]);
 }
 
 uimessage = {
 	'start': function (data) {
+		if (socket) socket.close();
+		startPending = true;
 		wbuf.b.set(crsf_rcchannels);
 		DECODE[CRSF_FRAMETYPE_RADIO_ID] = decode_radio_id_start;
-		navigator.serial.getPorts().then((ports) => {
-			if (ports.length < 1) {
-				log('error connecting: no ports found');
+		const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+		socket = new WebSocket(`${protocol}//${location.host}/serial`);
+		socket.binaryType = 'arraybuffer';
+		socket.onopen = () => socket.send(JSON.stringify(['connect', data[1], Number(data[2])]));
+		socket.onmessage = (event) => {
+			if (typeof event.data !== 'string') {
+				read_run(new Uint8Array(event.data));
 				return;
 			}
-			port = ports[0];
-			baud = Number(data[1]);
-			port.open({baudRate: baud}).then(() => {
-				log(`opened port at ${baud} bps`);
-				writer = port.writable.getWriter();
+			const message = JSON.parse(event.data);
+			if (message[0] === 'opened') {
+				startPending = false;
+				sessionActive = true;
 				write = write_run;
+				log(`opened port at ${Number(data[2])} bps`);
 				write();
-				reader = port.readable.getReader({mode:'byob'});
-				read = read_run;
-				read();
 				self.postMessage(["started"]);
 				self.postMessage(["sync", (10000000/write_interval).toFixed(1)]);
-			}).catch((e) => {
-				log(`error connecting to port: ${e.name} ${e.message}`);
-			});
-		}).catch((e) => {
-			log(`worker error: onmessage ${e.name} ${e.message}`);
-		});
+			} else if (message[0] === 'stopped') {
+				notify_stopped();
+			} else if (message[0] === 'error') {
+				log(`serial server error: ${message[1]}`);
+			}
+		};
+		socket.onerror = () => log('serial server connection failed');
+		socket.onclose = () => {
+			socket = null;
+			notify_stopped();
+		};
 	},
 	'stop': function (data) {
 		try {
 			write = write_close;
-			read = read_cancel;
-			read();
+			write_close();
 		} catch (e) {
 			console.log(`worker error: onmessage ${e.name} ${e.message}`);
 		}
