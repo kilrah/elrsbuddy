@@ -14,6 +14,25 @@ button {
 a {
 	color: white;
 }
+#screen-controls {
+	display: grid;
+	grid-template-columns: repeat(3, 56px);
+	grid-template-rows: repeat(3, 42px);
+	gap: 4px;
+	width: max-content;
+	margin: 8px auto 0;
+}
+#screen-controls button {
+	width: 56px;
+	height: 42px;
+	font-size: medium;
+}
+#screen-controls [data-keycode="27"] { grid-area: 1 / 1; }
+#screen-controls [data-keycode="38"] { grid-area: 1 / 2; }
+#screen-controls [data-keycode="37"] { grid-area: 2 / 1; }
+#screen-controls [data-keycode="40"] { grid-area: 3 / 2; }
+#screen-controls [data-keycode="39"] { grid-area: 2 / 3; }
+#screen-controls [data-keycode="13"] { grid-area: 2 / 2; }
 </style>
 </head>
 <body style="font-family:Roboto,-apple-system,BlinkMacSystemFont,Helvetica,Arial,sans-serif;">
@@ -34,13 +53,21 @@ a {
 				<button id="start" disabled="disabled">(re)start</button>
 				<select id="log-level" style="width: auto;">
 					<option value="0">DEBUG</option>
-					<option value="1" selected="selected">INFO</option>
-					<option value="2">WARN</option>
+					<option value="1">INFO</option>
+					<option value="2" selected="selected">WARN</option>
 					<option value="3">ERROR</option>
 				</select>
 			</div>
 			<div id="crsfstatus" style="text-align: center;"></div>
 			<canvas id="lcd" width="480" height="272" style="display:block; margin-left:auto; margin-right:auto;"></canvas>
+			<div id="screen-controls" aria-label="Screen controls">
+				<button type="button" data-keycode="27" aria-label="Esc">Esc</button>
+				<button type="button" data-keycode="38" aria-label="Up">Up</button>
+				<button type="button" data-keycode="37" aria-label="Left">Left</button>
+				<button type="button" data-keycode="40" aria-label="Down">Down</button>
+				<button type="button" data-keycode="39" aria-label="Right">Right</button>
+				<button type="button" data-keycode="13" aria-label="Enter">Enter</button>
+			</div>
 		</div>
 		<div style="margin: auto;">
 			<div style="color:white; font-size:1.5em; font-weight:bold; margin:auto; display:flex">
@@ -523,7 +550,7 @@ async function boot () {
 	crossfirePop = lua.global.get('crossfireTelemetryPop');
 	crossfireFlush = lua.global.get('crossfireTelemetryFlush');
 	multiret = lua.global.get('multiret');
-	const logelem = false //document.getElementById("log");
+	const logelem = document.getElementById("log");
 	if (logelem) {
 		llog = function (msg, level = 1) {
 			const currentLevel = parseInt(document.getElementById('log-level').value);
@@ -826,18 +853,25 @@ const workermsg = {
 
 window.addEventListener("load", boot);
 comworker.addEventListener("message", (e) => { return workermsg[e.data[0]](e.data); });
-document.addEventListener('keydown', (ev) => {
-	let key = keymap[ev.which];
+function handleKeypress (keycode, event) {
+	const key = keymap[keycode];
 	if (key === undefined) return true;
-	ev.preventDefault();
+	event?.preventDefault();
 	if (elrs == null) return false;
-	if (ev.which == 13) { // ENTER
+	if (keycode == 13) { // ENTER
 		popup_status.return = "OK";
-	} else if (ev.which == 27) { // ESCAPE
+	} else if (keycode == 27) { // ESCAPE
 		popup_status.return = "CANCEL";
 	}
 	elrsrun(key);
 	return false;
+}
+
+document.addEventListener('keydown', (event) => {
+	return handleKeypress(event.which, event);
+});
+document.querySelectorAll('#screen-controls button').forEach((button) => {
+	button.addEventListener('click', () => handleKeypress(Number(button.dataset.keycode)));
 });
 document.querySelector('script[src="elrs.lua"]').addEventListener(
 	'load',
