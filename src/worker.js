@@ -109,8 +109,23 @@ function decode_extended (buf) {
 }
 
 function decode_unknown (buf, type) {
-	log(`unknown ${type}: ` + hexprintable(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)));
+	log(`unknown ${type}: ` + hexprintable(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)), 0);
 	return DECODED_UNKNOWN;
+}
+
+function decode_link_statistics (buf) {
+	const up_rssi1 = buf.getUint8(0);
+	const up_rssi2 = buf.getUint8(1);
+	const up_lq = buf.getUint8(2);
+	const up_snr = buf.getInt8(3);
+	const active_ant = buf.getUint8(4);
+	const rf_mode = buf.getUint8(5);
+	const up_tx_pwr = buf.getUint8(6);
+	const dn_rssi = buf.getUint8(7);
+	const dn_lq = buf.getUint8(8);
+	const dn_snr = buf.getInt8(9);
+	log(`LINK_STAT: up_lq=${up_lq} up_snr=${up_snr} rf_mode=${rf_mode} dn_lq=${dn_lq} dn_snr=${dn_snr}`, 0);
+	return DECODED_FORWARD;
 }
 
 function decode_elrs_status (buf) {
@@ -123,14 +138,14 @@ function decode_elrs_status (buf) {
 		if (buf.getUint8(n) == 0) break;
 	}
 	const msg = bytes2str(new Uint8Array(buf.buffer, buf.byteOffset+6, buf.byteLength-6));
-	log(`${src}->${dst} ELRS_STATUS: nbad=${nbad} ngood=${ngood} flags=${flags} msg=${msg}`);
+	log(`${src}->${dst} ELRS_STATUS: nbad=${nbad} ngood=${ngood} flags=${flags} msg=${msg}`, 1);
 	return DECODED_FORWARD;
 }
 
 function decode_parameter_write (buf) {
 	const [ dst, src ] = decode_extended(buf);
 	const idx = buf.getUint8(2);
-	log(`${src}->${dst} PARAMETER_WRITE: ${idx}`);
+	log(`${src}->${dst} PARAMETER_WRITE: ${idx}`, 1);
 	return DECODED_FORWARD;
 }
 
@@ -139,7 +154,7 @@ function decode_parameter_settings_entry (buf) {
 	var idx = buf.getUint8(2);
 	var left = buf.getUint8(3);
 	var end = new Uint8Array(buf.buffer, buf.byteOffset+4, buf.byteLength-4);
-	log(`${src}->${dst} SETTINGS_ENTRY: ${idx} ${left}: ${hexprintable(end)}`);
+	log(`${src}->${dst} SETTINGS_ENTRY: ${idx} ${left}: ${hexprintable(end)}`, 1);
 	return DECODED_FORWARD;
 }
 
@@ -164,7 +179,8 @@ function decode_device_info (buf) {
 		rev = buf.getUint8(n++);
 		npar = buf.getUint8(n++);
 		pver = buf.getUint8(n++);
-		log(`${src}->${dst} DEVICE_INFO: ${name} (${serial}) hwver=${hwver} swver=${maj}.${min}.${rev} npar=${npar} pver=${pver}`);
+		log(`${src}->${dst} DEVICE_INFO: ${name} (${serial}) hwver=${hwver} swver=${maj}.${min}.${rev} npar=${npar} pver=${pver}`, 1);
+		self.postMessage(['devinfo', name, maj, min, rev]);
 	}
 	return DECODED_FORWARD;
 }
@@ -176,14 +192,14 @@ function decode_radio_id (buf) {
 		shift = buf.getInt32(7);
 		self.postMessage(["sync", (10000000/interval).toFixed(1), shift]);
 		if (interval != write_interval) {
-			log(`worker adjusting loopinterval ${write_interval}=>${interval}`);
+			log(`worker adjusting loopinterval ${write_interval}=>${interval}`, 1);
 			write_interval = interval;
 		}
 		write_shift = shift;
 		// for debugging timing issues
 		//console.log(`sync ${shift}`);
 	} else {
-		log('SYNC: unknown subtype!');
+		log('SYNC: unknown subtype!', 1);
 	}
 	return DECODED_FINISHED;
 }
@@ -206,7 +222,7 @@ const DECODE = Array(
 	decode_unknown, // CRSF_FRAMETYPE_HEARTBEAT
 	decode_unknown, decode_unknown, decode_unknown, decode_unknown,
 	decode_unknown, decode_unknown, decode_unknown, decode_unknown,
-	decode_unknown, // CRSF_FRAMETYPE_LINK_STATISTICS
+	decode_link_statistics, // CRSF_FRAMETYPE_LINK_STATISTICS
 	decode_unknown,
 	decode_unknown, // CRSF_FRAMETYPE_RC_CHANNELS_PACKED
 	decode_unknown, // CRSF_FRAMETYPE_SUBSET_RC_CHANNELS_PACKED
@@ -287,8 +303,8 @@ const DECODE = Array(
 	decode_unknown, decode_unknown, decode_unknown
 );
 	
-function log (msg) {
-	self.postMessage(["log", msg]);
+function log (msg, level = 1) {
+	self.postMessage(["log", msg, level]);
 }
 
 function hex (buf) {
@@ -407,7 +423,7 @@ function write_burn (lastwrite) {
 
 function write_run () {
 	if (writes_burn+writes_st > 300) {
-		log(`writes_burn=${writes_burn} writes_st=${writes_st}`);
+		log(`writes_burn=${writes_burn} writes_st=${writes_st}`, 0);
 		writes_burn = writes_st = 0;
 	}
 	if (!socket || socket.readyState !== WebSocket.OPEN) return;
@@ -488,7 +504,7 @@ uimessage = {
 		wbuf.b.set(data[2], wbuf.offset);
 		wbuf.offset += data[2].length;
 		wbuf.b.set(crc8(wbuf.b.subarray(cst, wbuf.offset)), wbuf.offset++);
-		log(`worker sending: ${hexprintable(wbuf.b.subarray(start,wbuf.offset))}`);
+		log(`worker sending: ${hexprintable(wbuf.b.subarray(start,wbuf.offset))}`, 0);
 	},
 	'crctable': function (data) {
 		console.log(`${CRC8TABLE}`);
