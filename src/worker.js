@@ -7,6 +7,10 @@ const CRSF_FRAMETYPE_RADIO_ID = 0x3A;
 const TIME1MSEC = 10000;
 let CRC8TABLE = new Uint8Array(256);
 let socket = null;
+let port = null;
+let reader = null;
+let writer = null;
+let transportMode = 'client';
 let sessionActive = false;
 let startPending = false;
 let receiveBuffer = new Uint8Array(1024);
@@ -347,6 +351,10 @@ function buf_shift (buf, shift, offset) {
 }
 
 function write_close () {
+	if (transportMode === 'client') {
+		client_close();
+		return;
+	}
 	if (socket && socket.readyState === WebSocket.OPEN) {
 		socket.send(JSON.stringify(['disconnect']));
 	} else if (socket) {
@@ -354,6 +362,52 @@ function write_close () {
 	} else {
 		notify_stopped();
 	}
+}
+
+function client_close () {
+	if (!port) {
+		notify_stopped();
+		return;
+	}
+	const closingPort = port;
+	const closeReader = reader ? reader.cancel().catch(() => {}).then(() => {
+		reader.releaseLock();
+		reader = null;
+	}) : Promise.resolve();
+	const closeWriter = writer ? writer.close().catch(() => {}).then(() => {
+		writer.releaseLock();
+		writer = null;
+	}) : Promise.resolve();
+	Promise.all([closeReader, closeWriter]).then(() => closingPort.close()).then(() => {
+		port = null;
+		notify_stopped();
+	}).catch((error) => {
+		log(`error closing client serial port: ${error.message}`, 1);
+		port = null;
+		notify_stopped();
+	});
+}
+
+function client_read_run () {
+	const activeReader = reader;
+	if (!activeReader) return;
+	activeReader.read().then(({value, done}) => {
+		if (reader !== activeReader) return;
+		if (done) {
+			activeReader.releaseLock();
+			reader = null;
+			write = write_close;
+			client_close();
+			return;
+		}
+		read_run(value);
+		return client_read_run();
+	}).catch((error) => {
+		if (reader !== activeReader) return;
+		if (sessionActive) log(`client serial read error: ${error.message}`, 1);
+		write = write_close;
+		client_close();
+	});
 }
 
 function notify_stopped () {
@@ -426,11 +480,19 @@ function write_run () {
 		log(`writes_burn=${writes_burn} writes_st=${writes_st}`, 0);
 		writes_burn = writes_st = 0;
 	}
-	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	if (transportMode === 'client' ? !writer : !socket || socket.readyState !== WebSocket.OPEN) return;
 	const bytes = wbuf.b.slice(0, wbuf.offset);
 	wbuf.offset = 26;
-	socket.send(bytes);
-	write_complete();
+	if (transportMode === 'client') {
+		writer.write(bytes).then(write_complete).catch((error) => {
+			log(`client serial write error: ${error.message}`, 1);
+			write = write_close;
+			client_close();
+		});
+	} else {
+		socket.send(bytes);
+		write_complete();
+	}
 }
 
 function write_complete () {
@@ -450,14 +512,39 @@ function write_complete () {
 
 uimessage = {
 	'start': function (data) {
+		transportMode = data[1];
 		if (socket) socket.close();
 		startPending = true;
+		receiveOffset = 0;
 		wbuf.b.set(crsf_rcchannels);
 		DECODE[CRSF_FRAMETYPE_RADIO_ID] = decode_radio_id_start;
+		if (transportMode === 'client') {
+			navigator.serial.getPorts().then((ports) => {
+				if (!ports.length) throw new Error('No paired client serial ports found');
+				port = ports[0];
+				return port.open({baudRate: Number(data[3])});
+			}).then(() => {
+				writer = port.writable.getWriter();
+				reader = port.readable.getReader();
+				write = write_run;
+				sessionActive = true;
+				startPending = false;
+				log(`opened client port at ${Number(data[3])} bps`, 1);
+				write();
+				client_read_run();
+				self.postMessage(["started"]);
+				self.postMessage(["sync", (10000000/write_interval).toFixed(1)]);
+			}).catch((error) => {
+				log(`error connecting to client port: ${error.name} ${error.message}`, 1);
+				if (port && port.readable === null && port.writable === null) port = null;
+				notify_stopped();
+			});
+			return;
+		}
 		const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
 		socket = new WebSocket(`${protocol}//${location.host}/serial`);
 		socket.binaryType = 'arraybuffer';
-		socket.onopen = () => socket.send(JSON.stringify(['connect', data[1], Number(data[2])]));
+		socket.onopen = () => socket.send(JSON.stringify(['connect', data[2], Number(data[3])]));
 		socket.onmessage = (event) => {
 			if (typeof event.data !== 'string') {
 				read_run(new Uint8Array(event.data));
@@ -468,7 +555,7 @@ uimessage = {
 				startPending = false;
 				sessionActive = true;
 				write = write_run;
-				log(`opened port at ${Number(data[2])} bps`);
+				log(`opened server port at ${Number(data[3])} bps`);
 				write();
 				self.postMessage(["started"]);
 				self.postMessage(["sync", (10000000/write_interval).toFixed(1)]);

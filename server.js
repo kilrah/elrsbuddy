@@ -4,6 +4,12 @@ const path = require('node:path');
 const { SerialPort } = require('serialport');
 const { WebSocketServer, WebSocket } = require('ws');
 
+const serialArgument = process.argv.find((argument) => argument.startsWith('--serial='));
+const serialMode = serialArgument ? serialArgument.slice('--serial='.length) : 'client';
+if (!['client', 'server'].includes(serialMode)) {
+	throw new Error('Use --serial=client or --serial=server');
+}
+
 const root = path.join(__dirname, 'dist');
 const contentTypes = {
 	'.html': 'text/html; charset=utf-8',
@@ -38,7 +44,16 @@ function closePort (socket) {
 
 const server = http.createServer(async (request, response) => {
 	const url = new URL(request.url, 'http://localhost');
+	if (request.method === 'GET' && url.pathname === '/api/config') {
+		response.writeHead(200, { 'content-type': 'application/json' });
+		response.end(JSON.stringify({ serialMode }));
+		return;
+	}
 	if (request.method === 'GET' && url.pathname === '/api/ports') {
+		if (serialMode !== 'server') {
+			response.writeHead(404).end();
+			return;
+		}
 		try {
 			const ports = await SerialPort.list();
 			response.writeHead(200, { 'content-type': 'application/json' });
@@ -72,7 +87,7 @@ const server = http.createServer(async (request, response) => {
 
 const sockets = new WebSocketServer({ noServer: true });
 server.on('upgrade', (request, socket, head) => {
-	if (request.url !== '/serial') {
+	if (serialMode !== 'server' || request.url !== '/serial') {
 		socket.destroy();
 		return;
 	}

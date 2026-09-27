@@ -21,6 +21,7 @@ a {
 	<div style="display:flex;">
 		<div style="width:700px;">
 			<div style="display:flex;">
+				<button id="pair" hidden>pair device</button>
 				<select id="serialport" disabled="disabled"></select>
 				<button id="refreshports">refresh ports</button>
 				<select id="baud" size="1" disabled="disabled">
@@ -387,6 +388,33 @@ function loadports (verbose=true) {
 	});
 }
 
+function portstr (info) {
+	return `${info.usbVendorId || 0}:${info.usbProductId || 0}`;
+}
+
+function loadpairedports (verbose=true) {
+	if (!navigator.serial) {
+		llog('Browser does not support Web Serial API. Use a Chrome-based browser.', 3);
+		pairbutton.disabled = true;
+		connbutton.disabled = true;
+		baudselect.disabled = true;
+		return;
+	}
+	navigator.serial.getPorts().then((ports) => {
+		pairedport = ports.length ? { port: ports[0], info: portstr(ports[0].getInfo()) } : null;
+		if (pairedport) {
+			pairbutton.innerHTML = `unpair ${pairedport.info}`;
+			baudselect.disabled = serialConnected;
+			connbutton.disabled = serialConnected || serialConnecting;
+			if (verbose) llog(`client device ${pairedport.info} found`, 1);
+		} else {
+			pairbutton.innerHTML = 'pair device';
+			baudselect.disabled = true;
+			connbutton.disabled = true;
+		}
+	}).catch((error) => llog(`Unable to list client serial ports: ${error.message}`, 3));
+}
+
 function edgetx_popupConfirmation (title, message, event) {
 	const ret = popup_status.return;
 	popup_status.title = title;
@@ -465,6 +493,17 @@ function elrsrefresh (clear=false) {
 }
 
 async function boot () {
+	try {
+		const response = await fetch('/api/config');
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		serialMode = (await response.json()).serialMode;
+	} catch (error) {
+		llog(`Unable to read server configuration: ${error.message}`, 3);
+		return;
+	}
+	pairbutton.hidden = serialMode !== 'client';
+	serialselect.hidden = serialMode !== 'server';
+	refreshportsbutton.hidden = serialMode !== 'server';
 	const lua = await wasmoon.factory.createEngine();
 	window.lua = lua;
 	lua.global.set('getTime', get_uptime);
@@ -497,7 +536,8 @@ async function boot () {
 			}
 		}
 	}
-	loadports();
+	if (serialMode === 'server') loadports();
+	else loadpairedports();
 	lcd.ctx = document.getElementById('lcd').getContext('2d');
 	lcd.clear();
 	lcd.INVERS = lua.global.get('INVERS');
@@ -563,11 +603,14 @@ crossfireFlush = null;
 multiret = null;
 serialConnected = false;
 serialConnecting = false;
+serialMode = 'client';
+pairedport = null;
 statusinterval = null;
 elrsinterval = null;
 comworker = new Worker('worker.js');
 baudselect = document.getElementById('baud');
 connbutton = document.getElementById('connect');
+pairbutton = document.getElementById('pair');
 serialselect = document.getElementById('serialport');
 refreshportsbutton = document.getElementById('refreshports');
 startbutton = document.getElementById('start');
@@ -718,28 +761,34 @@ status.reset();
 
 const workermsg = {
 	'started': function (data) {
-		llog("server serial port connected");
+		llog(`${serialMode} serial port connected`);
 		serialConnecting = false;
 		serialConnected = true;
 		connbutton.innerHTML = 'disconnect';
 		connbutton.disabled = false;
+		pairbutton.disabled = true;
 		serialselect.disabled = true;
 		baudselect.disabled = true;
 		refreshportsbutton.disabled = true;
 		status.start();
 	},
 	'stopped': function (data) {
-		llog("server serial port disconnected");
+		llog(`${serialMode} serial port disconnected`);
 		serialConnecting = false;
 		serialConnected = false;
 		connbutton.innerHTML = 'connect';
-		refreshportsbutton.disabled = false;
 		document.getElementById('lua-version').innerText = '-- (no connection)';
 		crossfireFlush();
 		status.reset();
 		elrsrefresh(true);
 		elrs = null;
-		loadports(false);
+		if (serialMode === 'server') {
+			refreshportsbutton.disabled = false;
+			loadports(false);
+		} else {
+			pairbutton.disabled = false;
+			loadpairedports(false);
+		}
 	},
 	'writeburn': function (data) {
 		comworker.postMessage(data);
@@ -808,15 +857,40 @@ serialselect.addEventListener('change', () => {
 
 refreshportsbutton.addEventListener('click', () => loadports());
 
+pairbutton.addEventListener('click', () => {
+	if (!navigator.serial) {
+		llog('Browser does not support Web Serial API.', 3);
+		return;
+	}
+	if (pairedport) {
+		pairedport.port.forget().then(() => {
+			llog(`client device ${pairedport.info} unpaired`, 1);
+			loadpairedports(false);
+		}).catch((error) => llog(`Unable to unpair client device: ${error.message}`, 3));
+		return;
+	}
+	navigator.serial.requestPort().then((port) => {
+		llog(`client device ${portstr(port.getInfo())} paired`, 1);
+		loadpairedports(false);
+	}).catch((error) => {
+		if (error.name !== 'NotFoundError') llog(`Unable to pair client device: ${error.message}`, 3);
+	});
+});
+
+navigator.serial?.addEventListener('connect', () => loadpairedports(false));
+navigator.serial?.addEventListener('disconnect', () => loadpairedports(false));
+
 connbutton.addEventListener("click", () => {
 	if (connbutton.innerHTML == 'connect') {
-		if (!serialselect.value) return;
+		if (serialMode === 'client' && !pairedport) return;
+		if (serialMode === 'server' && !serialselect.value) return;
 		serialConnecting = true;
-		serialselect.disabled = true;
+		serialselect.disabled = serialMode !== 'server';
 		baudselect.disabled = true;
-		refreshportsbutton.disabled = true;
+		refreshportsbutton.disabled = serialMode !== 'server';
+		pairbutton.disabled = serialMode !== 'client';
 		connbutton.disabled = true;
-		comworker.postMessage(["start", serialselect.value, baudselect.value]);
+		comworker.postMessage(["start", serialMode, serialselect.value, baudselect.value]);
 		connbutton.innerHTML = 'connecting...';
 	} else {
 		comworker.postMessage(["stop"]);
