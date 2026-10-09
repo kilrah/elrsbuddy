@@ -7,6 +7,8 @@ This forks https://github.com/Fourflies/elrsbuddy, then
 - Adds support for server-side serial ports as an option when starting the server
 - Adds buttons for navigating the lua script on a keyboardless device e.g. phone
 
+Work mostly done by Copilot.
+
 ## Build instructions
 Install node/npm on the server you'll run this on
 
